@@ -171,7 +171,8 @@ void gemm_tile_simd_par(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float al
                 }
                 __m256 c_vec = _mm256_loadu_ps(&C[i * NJ + j]);
                 __m256 b_vec = _mm256_loadu_ps(&B[k * NJ + j]);
-                c_vec = _mm256_fmadd_ps(a_vec, b_vec, c_vec);  // Fused Multiply-Add (FMA)
+                __m256 temp_vec = _mm256_mul_ps(a_vec, b_vec);
+                c_vec = _mm256_add_ps(temp_vec, c_vec);
                 _mm256_storeu_ps(&C[i * NJ + j], c_vec);
             }
         }
