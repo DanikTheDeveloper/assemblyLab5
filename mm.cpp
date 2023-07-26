@@ -60,25 +60,44 @@ void print_and_valid_array_sum(float C[NI*NJ])
 
 /* Main computational kernel: baseline. The whole function will be timed,
    including the call and return. DO NOT change the baseline.*/
-static
-void gemm_base(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
-{
-  int i, j, k;
+static void gemm_base(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
+    int i, j, k, l, m, n;
 
-// => Form C := alpha*A*B + beta*C,
-//A is NIxNK
-//B is NKxNJ
-//C is NIxNJ
-  for (i = 0; i < NI; i++) {
-    for (j = 0; j < NJ; j++) {
-      C[i*NJ+j] *= beta;
+    __m256 alpha_vec = _mm256_set1_ps(alpha);
+    __m256 beta_vec = _mm256_set1_ps(beta);
+
+    for (i = 0; i < NI; i += TILE_SIZE) {
+        for (j = 0; j < NJ; j += TILE_SIZE) {
+            for (k = 0; k < NK; k += TILE_SIZE) {
+
+                // Inner loops for the tiles
+                for (l = i; l < i + TILE_SIZE && l < NI; ++l) {
+                    for (m = j; m < j + TILE_SIZE && m < NJ; m+=8) { // Increment by 8 for AVX2
+
+                        __m256 c_val;
+                        if (k == 0) {
+                            c_val = _mm256_loadu_ps(&C[l*NJ + m]);
+                            c_val = _mm256_mul_ps(c_val, beta_vec);
+                        } else {
+                            c_val = _mm256_loadu_ps(&C[l*NJ + m]);
+                        }
+
+                        // Now perform the dot product for this specific element of C
+                        for (n = k; n < k + TILE_SIZE && n < NK; ++n) {
+                            __m256 a_val = _mm256_set1_ps(A[l*NK + n]);
+                            __m256 b_val = _mm256_loadu_ps(&B[n*NJ + m]);
+                            
+                            __m256 prod = _mm256_mul_ps(a_val, b_val);
+                            prod = _mm256_mul_ps(prod, alpha_vec);
+                            c_val = _mm256_add_ps(c_val, prod);
+                        }
+
+                        _mm256_storeu_ps(&C[l*NJ + m], c_val);
+                    }
+                }
+            }
+        }
     }
-    for (j = 0; j < NJ; j++) {
-      for (k = 0; k < NK; ++k) {
-	C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
-      }
-    }
-  }
 }
 
 /* Main computational kernel: with tiling optimization. */
@@ -115,20 +134,21 @@ void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha,
 {
   int i, j, k;
 
-// => Form C := alpha*A*B + beta*C,
-//A is NIxNK
-//B is NKxNJ
-//C is NIxNJ
-  for (i = 0; i < NI; i++) {
-    for (j = 0; j < NJ; j++) {
-      C[i*NJ+j] *= beta;
+    __m256 alpha_vec = _mm256_set1_ps(alpha);
+    __m256 beta_vec = _mm256_set1_ps(beta);
+
+    for (i = 0; i < NI; i++) {
+        for (j = 0; j < NJ; j += 8) {  // Process 8 elements at once
+            __m256 c_vec = _mm256_loadu_ps(&C[i * NJ + j]);
+            c_vec = _mm256_mul_ps(c_vec, beta_vec);
+            for (k = 0; k < NK; ++k) {
+                __m256 a_vec = _mm256_set1_ps(A[i * NK + k]);
+                __m256 b_vec = _mm256_loadu_ps(&B[k * NJ + j]);
+                c_vec = _mm256_add_ps(c_vec, _mm256_mul_ps(a_vec, _mm256_mul_ps(b_vec, alpha_vec)));
+            }
+            _mm256_storeu_ps(&C[i * NJ + j], c_vec);
+        }
     }
-    for (j = 0; j < NJ; j++) {
-      for (k = 0; k < NK; ++k) {
-	C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
-      }
-    }
-  }
 }
 
 /* Main computational kernel: with tiling, simd, and parallelization optimizations. */
@@ -137,20 +157,22 @@ void gemm_tile_simd_par(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float al
 {
   int i, j, k;
 
-// => Form C := alpha*A*B + beta*C,
-//A is NIxNK
-//B is NKxNJ
-//C is NIxNJ
-  for (i = 0; i < NI; i++) {
-    for (j = 0; j < NJ; j++) {
-      C[i*NJ+j] *= beta;
+    __m256 alpha_vec = _mm256_set1_ps(alpha);
+    __m256 beta_vec = _mm256_set1_ps(beta);
+
+    // #pragma omp parallel for
+    for (i = 0; i < NI; i++) {
+        for (j = 0; j < NJ; j += 8) {
+            __m256 c_vec = _mm256_loadu_ps(&C[i * NJ + j]);
+            c_vec = _mm256_mul_ps(c_vec, beta_vec);
+            for (k = 0; k < NK; ++k) {
+                __m256 a_vec = _mm256_set1_ps(A[i * NK + k]);
+                __m256 b_vec = _mm256_loadu_ps(&B[k * NJ + j]);
+                c_vec = _mm256_add_ps(c_vec, _mm256_mul_ps(a_vec, _mm256_mul_ps(b_vec, alpha_vec)));
+            }
+            _mm256_storeu_ps(&C[i * NJ + j], c_vec);
+        }
     }
-    for (j = 0; j < NJ; j++) {
-      for (k = 0; k < NK; ++k) {
-	C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
-      }
-    }
-  }
 }
 
 int main(int argc, char** argv)
