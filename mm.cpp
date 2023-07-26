@@ -4,7 +4,7 @@
 #include <x86intrin.h>
 #include <omp.h>
 
-#define BLOCK_SIZE 64
+#define BLOCK_SIZE 16
 
 #define NI 4096
 #define NJ 4096
@@ -156,22 +156,24 @@ void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha,
 static
 void gemm_tile_simd_par(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
 {
-  int i, j, k;
-
-    __m256 alpha_vec = _mm256_set1_ps(alpha);
+  __m256 alpha_vec = _mm256_set1_ps(alpha);
     __m256 beta_vec = _mm256_set1_ps(beta);
 
-    // #pragma omp parallel for
-    for (i = 0; i < NI; i++) {
-        for (j = 0; j < NJ; j += 8) {
-            __m256 c_vec = _mm256_loadu_ps(&C[i * NJ + j]);
-            c_vec = _mm256_mul_ps(c_vec, beta_vec);
-            for (k = 0; k < NK; ++k) {
-                __m256 a_vec = _mm256_set1_ps(A[i * NK + k]);
+    #pragma omp parallel for
+    for (int i = 0; i < NI; i++) {
+        for (int k = 0; k < NK; k++) {
+            __m256 a_vec = _mm256_set1_ps(A[i * NK + k]);
+            for (int j = 0; j < NJ; j += 8) {
+                if (k == 0) { // Scale by beta only on first iteration
+                    __m256 c_vec = _mm256_loadu_ps(&C[i * NJ + j]);
+                    c_vec = _mm256_mul_ps(c_vec, beta_vec);
+                    _mm256_storeu_ps(&C[i * NJ + j], c_vec);
+                }
+                __m256 c_vec = _mm256_loadu_ps(&C[i * NJ + j]);
                 __m256 b_vec = _mm256_loadu_ps(&B[k * NJ + j]);
-                c_vec = _mm256_add_ps(c_vec, _mm256_mul_ps(a_vec, _mm256_mul_ps(b_vec, alpha_vec)));
+                c_vec = _mm256_fmadd_ps(a_vec, b_vec, c_vec);  // Fused Multiply-Add (FMA)
+                _mm256_storeu_ps(&C[i * NJ + j], c_vec);
             }
-            _mm256_storeu_ps(&C[i * NJ + j], c_vec);
         }
     }
 }
