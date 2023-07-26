@@ -4,6 +4,8 @@
 #include <x86intrin.h>
 #include <omp.h>
 
+#define BLOCK_SIZE 64
+
 #define NI 4096
 #define NJ 4096
 #define NK 4096
@@ -60,19 +62,19 @@ void print_and_valid_array_sum(float C[NI*NJ])
 
 /* Main computational kernel: baseline. The whole function will be timed,
    including the call and return. DO NOT change the baseline.*/
-static void gemm_base(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
+void gemm_base(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
     int i, j, k, l, m, n;
 
     __m256 alpha_vec = _mm256_set1_ps(alpha);
     __m256 beta_vec = _mm256_set1_ps(beta);
 
-    for (i = 0; i < NI; i += TILE_SIZE) {
-        for (j = 0; j < NJ; j += TILE_SIZE) {
-            for (k = 0; k < NK; k += TILE_SIZE) {
+    for (i = 0; i < NI; i += BLOCK_SIZE) {
+        for (j = 0; j < NJ; j += BLOCK_SIZE) {
+            for (k = 0; k < NK; k += BLOCK_SIZE) {
 
                 // Inner loops for the tiles
-                for (l = i; l < i + TILE_SIZE && l < NI; ++l) {
-                    for (m = j; m < j + TILE_SIZE && m < NJ; m+=8) { // Increment by 8 for AVX2
+                for (l = i; l < i + BLOCK_SIZE && l < NI; ++l) {
+                    for (m = j; m < j + BLOCK_SIZE && m < NJ; m+=8) { // Increment by 8 for AVX2
 
                         __m256 c_val;
                         if (k == 0) {
@@ -83,7 +85,7 @@ static void gemm_base(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alph
                         }
 
                         // Now perform the dot product for this specific element of C
-                        for (n = k; n < k + TILE_SIZE && n < NK; ++n) {
+                        for (n = k; n < k + BLOCK_SIZE && n < NK; ++n) {
                             __m256 a_val = _mm256_set1_ps(A[l*NK + n]);
                             __m256 b_val = _mm256_loadu_ps(&B[n*NJ + m]);
                             
@@ -104,7 +106,6 @@ static void gemm_base(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alph
 static void gemm_tile(float C[NI * NJ], float A[NI * NK], float B[NK * NJ], float alpha, float beta)
 {
     int i, j, k, i_blk, j_blk, k_blk;
-    const int BLOCK_SIZE = 16; // Choose an appropriate block size for tiling.
 
     // Loop over the blocks of matrices A, B, and C using tiling
     for (i_blk = 0; i_blk < NI; i_blk += BLOCK_SIZE) {
