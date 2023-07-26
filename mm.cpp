@@ -4,7 +4,7 @@
 #include <x86intrin.h>
 #include <omp.h>
 
-#define BLOCK_SIZE 16
+#define BLOCK_SIZE 64
 
 #define NI 4096
 #define NJ 4096
