@@ -82,50 +82,56 @@ void gemm_base(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, floa
 }
 
 /* Main computational kernel: with tiling optimization. */
-static void gemm_tile(float C[NI * NJ], float A[NI * NK], float B[NK * NJ], float alpha, float beta)
+static
+void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
 {
-    int i, j, k, i_blk, j_blk, k_blk;
-    const int BLOCK_SIZE = 16; // Choose an appropriate block size for tiling.
+  int i, j, k, ii, jj, kk;
+  const int TILE_SIZE = 32; // this can be tuned
 
-    // Loop over the blocks of matrices A, B, and C using tiling
-    for (i_blk = 0; i_blk < NI; i_blk += BLOCK_SIZE) {
-        for (j_blk = 0; j_blk < NJ; j_blk += BLOCK_SIZE) {
-            for (k_blk = 0; k_blk < NK; k_blk += BLOCK_SIZE) {
-                // Process a block of matrix C
-                for (i = i_blk; i < i_blk + BLOCK_SIZE && i < NI; i++) {
-                    for (j = j_blk; j < j_blk + BLOCK_SIZE && j < NJ; j++) {
-                        // Scale the current element of C by beta
-                        C[i * NJ + j] *= beta;
+  for (ii = 0; ii < NI; ii+=TILE_SIZE) {
+    for (jj = 0; jj < NJ; jj+=TILE_SIZE) {
+      for (kk = 0; kk < NK; kk+=TILE_SIZE) {
 
-                        // Compute the matrix multiplication for the current element of C
-                        for (k = k_blk; k < k_blk + BLOCK_SIZE && k < NK; k++) {
-                            C[i * NJ + j] += alpha * A[i * NK + k] * B[k * NJ + j];
-                        }
-                    }
-                }
+        for (i = ii; i < ii+TILE_SIZE && i < NI; i++) {
+          for (j = jj; j < jj+TILE_SIZE && j < NJ; j++) {
+            C[i*NJ+j] *= beta;
+            
+            for (k = kk; k < kk+TILE_SIZE && k < NK; ++k) {
+              C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
             }
+          }
         }
-    }
-}
 
+      }
+    }
+  }
+}
 
 /* Main computational kernel: with tiling and simd optimizations. */
 static
 void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
 {
-  int i, j, k;
+  int i, j, k, ii, jj, kk;
+  const int TILE_SIZE = 32;
 
-// => Form C := alpha*A*B + beta*C,
-//A is NIxNK
-//B is NKxNJ
-//C is NIxNJ
-  for (i = 0; i < NI; i++) {
-    for (j = 0; j < NJ; j++) {
-      C[i*NJ+j] *= beta;
-    }
-    for (j = 0; j < NJ; j++) {
-      for (k = 0; k < NK; ++k) {
-	C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
+  for (ii = 0; ii < NI; ii+=TILE_SIZE) {
+    for (jj = 0; jj < NJ; jj+=TILE_SIZE) {
+      for (kk = 0; kk < NK; kk+=TILE_SIZE) {
+
+        for (i = ii; i < ii+TILE_SIZE && i < NI; i++) {
+          for (j = jj; j < jj+TILE_SIZE && j < NJ; j++) {
+            __m256 vecC = _mm256_mul_ps(_mm256_loadu_ps(&C[i*NJ+j]), _mm256_set1_ps(beta));
+            
+            for (k = kk; k < kk+TILE_SIZE && k < NK; k+=8) {
+              __m256 vecA = _mm256_loadu_ps(&A[i*NK+k]);
+              __m256 vecB = _mm256_loadu_ps(&B[k*NJ+j]);
+              vecC = _mm256_fmadd_ps(vecA, vecB, vecC);
+            }
+            
+            _mm256_storeu_ps(&C[i*NJ+j], vecC);
+          }
+        }
+
       }
     }
   }
@@ -135,22 +141,37 @@ void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha,
 static
 void gemm_tile_simd_par(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
 {
-  int i, j, k;
+  // Define the tile size
+    int TILE_SIZE = 64;  // This is just a starting point, you may need to experiment with different sizes
+    int i, j, k, i1, j1, k1;
 
-// => Form C := alpha*A*B + beta*C,
-//A is NIxNK
-//B is NKxNJ
-//C is NIxNJ
-  for (i = 0; i < NI; i++) {
-    for (j = 0; j < NJ; j++) {
-      C[i*NJ+j] *= beta;
+    #pragma omp parallel for private(i, j, k, i1, j1, k1)
+    for (i = 0; i < NI; i += TILE_SIZE) {
+        for (j = 0; j < NJ; j += TILE_SIZE) {
+            for (k = 0; k < NK; k += TILE_SIZE) {
+
+                // Now handle the tiles
+                for (i1 = i; i1 < i + TILE_SIZE && i1 < NI; ++i1) {
+                    for (j1 = j; j1 < j + TILE_SIZE && j1 < NJ; ++j1) {
+
+                        __m256 vecC = _mm256_setzero_ps();
+                        if(k == 0) vecC = _mm256_mul_ps(_mm256_broadcast_ss(&beta), _mm256_loadu_ps(&C[i1*NJ + j1]));
+
+                        for (k1 = k; k1 < k + TILE_SIZE && k1 < NK; k1 += 8) {  // increment by 8 because of 256-bit AVX2
+                            __m256 vecA = _mm256_broadcast_ss(&A[i1*NK + k1]);
+                            __m256 vecB = _mm256_loadu_ps(&B[k1*NJ + j1]);
+                            vecC = _mm256_fmadd_ps(vecA, vecB, vecC);
+                        }
+
+                        // If k == 0, we've already multiplied by beta above
+                        if (k != 0) C[i1*NJ + j1] *= beta;
+
+                        C[i1*NJ + j1] += alpha * _mm256_cvtss_f32(vecC);
+                    }
+                }
+            }
+        }
     }
-    for (j = 0; j < NJ; j++) {
-      for (k = 0; k < NK; ++k) {
-	C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
-      }
-    }
-  }
 }
 
 int main(int argc, char** argv)
