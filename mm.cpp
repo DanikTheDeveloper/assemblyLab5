@@ -182,6 +182,7 @@ static void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float
 static void gemm_tile_simd_par(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
 {
     int i, j, k, i1, j1, k1, i2, j2, k2, i3, j3, k3;
+    int nthreads = omp_get_max_threads();
 
     // Apply beta scaling outside the parallel region for data consistency
     for (i = 0; i < NI; i++)
