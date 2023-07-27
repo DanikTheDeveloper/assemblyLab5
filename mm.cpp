@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include "my_timer.h"
 #include <x86intrin.h>
-#include <immintrin.h>
 #include <omp.h>
 
 #define NI 4096
@@ -83,54 +82,46 @@ void gemm_base(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, floa
 }
 
 /* Main computational kernel: with tiling optimization. */
+#define TILE_SIZE 32
 
-#define BLOCK_SIZE 32
-static
-void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
-{
+static void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
     int i, j, k, ii, jj, kk;
 
-    for (ii = 0; ii < NI; ii+=BLOCK_SIZE) {
-        for (jj = 0; jj < NJ; jj+=BLOCK_SIZE) {
-            for (kk = 0; kk < NK; kk+=BLOCK_SIZE) {
-                for (i = ii; i < ii+BLOCK_SIZE && i < NI; i++) {
-                    for (j = jj; j < jj+BLOCK_SIZE && j < NJ; j++) {
-                        C[i*NJ+j] *= beta;
-                        for (k = kk; k < kk+BLOCK_SIZE && k < NK; ++k) {
-                            C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
+    for (ii = 0; ii < NI; ii += TILE_SIZE) {
+        for (jj = 0; jj < NJ; jj += TILE_SIZE) {
+            for (kk = 0; kk < NK; kk += TILE_SIZE) {
+                for (i = ii; i < ii + TILE_SIZE && i < NI; i++) {
+                    for (j = jj; j < jj + TILE_SIZE && j < NJ; j++) {
+                        float cij = C[i*NJ+j] * beta;
+                        for (k = kk; k < kk + TILE_SIZE && k < NK; ++k) {
+                            cij += alpha * A[i*NK+k] * B[k*NJ+j];
                         }
+                        C[i*NJ+j] = cij;
                     }
                 }
             }
         }
     }
 }
-
 
 /* Main computational kernel: with tiling and simd optimizations. */
-static
-void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
-{
+static void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
     int i, j, k, ii, jj, kk;
 
-    __m256 vAlpha = _mm256_set1_ps(alpha);
-    __m256 vBeta = _mm256_set1_ps(beta);
-
-    for (ii = 0; ii < NI; ii+=BLOCK_SIZE) {
-        for (jj = 0; jj < NJ; jj+=BLOCK_SIZE) {
-            for (kk = 0; kk < NK; kk+=BLOCK_SIZE) {
-                for (i = ii; i < ii+BLOCK_SIZE && i < NI; i++) {
-                    for (j = jj; j < jj+BLOCK_SIZE && j < NJ; j++) {
-                        C[i*NJ+j] *= beta;
-                        for (k = kk; k < kk+BLOCK_SIZE && k < NK; k+=8) {
-                            __m256 vA = _mm256_load_ps(&A[i*NK+k]);
-                            __m256 vB = _mm256_load_ps(&B[k*NJ+j]);
-                            __m256 vC = _mm256_load_ps(&C[i*NJ+j]);
-                            
-                            vC = _mm256_fmadd_ps(vA, vB, vC);
-                            
-                            _mm256_store_ps(&C[i*NJ+j], vC);
+    for (ii = 0; ii < NI; ii += TILE_SIZE) {
+        for (jj = 0; jj < NJ; jj += TILE_SIZE) {
+            for (kk = 0; kk < NK; kk += TILE_SIZE) {
+                for (i = ii; i < ii + TILE_SIZE && i < NI; i++) {
+                    for (j = jj; j < jj + TILE_SIZE && j < NJ; j++) {
+                        float cij = C[i*NJ+j] * beta;
+                        for (k = kk; k < kk + TILE_SIZE && k < NK; k += 8) {
+                            __m256 vA = _mm256_loadu_ps(&A[i*NK+k]);
+                            __m256 vB = _mm256_loadu_ps(&B[k*NJ+j]);
+                            __m256 vC = _mm256_loadu_ps(&C[i*NJ+j]);
+                            vC = _mm256_add_ps(vC, _mm256_mul_ps(vA, vB));
+                            _mm256_storeu_ps(&C[i*NJ+j], vC);
                         }
+                        C[i*NJ+j] = cij;
                     }
                 }
             }
@@ -138,31 +129,26 @@ void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha,
     }
 }
 
+
 /* Main computational kernel: with tiling, simd, and parallelization optimizations. */
-static
-void gemm_tile_simd_par(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
-{
+static void gemm_tile_simd_par(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
     int i, j, k, ii, jj, kk;
 
-    __m256 vAlpha = _mm256_set1_ps(alpha);
-    __m256 vBeta = _mm256_set1_ps(beta);
-
-    #pragma omp parallel for private(i,j,k,jj,kk) schedule(dynamic)
-    for (ii = 0; ii < NI; ii+=BLOCK_SIZE) {
-        for (jj = 0; jj < NJ; jj+=BLOCK_SIZE) {
-            for (kk = 0; kk < NK; kk+=BLOCK_SIZE) {
-                for (i = ii; i < ii+BLOCK_SIZE && i < NI; i++) {
-                    for (j = jj; j < jj+BLOCK_SIZE && j < NJ; j++) {
-                        C[i*NJ+j] *= beta;
-                        for (k = kk; k < kk+BLOCK_SIZE && k < NK; k+=8) {
-                            __m256 vA = _mm256_load_ps(&A[i*NK+k]);
-                            __m256 vB = _mm256_load_ps(&B[k*NJ+j]);
-                            __m256 vC = _mm256_load_ps(&C[i*NJ+j]);
-                            
-                            vC = _mm256_fmadd_ps(vA, vB, vC);
-                            
-                            _mm256_store_ps(&C[i*NJ+j], vC);
+    #pragma omp parallel for private(i,j,k,ii,jj,kk) shared(A,B,C) schedule(dynamic)
+    for (ii = 0; ii < NI; ii += TILE_SIZE) {
+        for (jj = 0; jj < NJ; jj += TILE_SIZE) {
+            for (kk = 0; kk < NK; kk += TILE_SIZE) {
+                for (i = ii; i < ii + TILE_SIZE && i < NI; i++) {
+                    for (j = jj; j < jj + TILE_SIZE && j < NJ; j++) {
+                        float cij = C[i*NJ+j] * beta;
+                        for (k = kk; k < kk + TILE_SIZE && k < NK; k += 8) {
+                            __m256 vA = _mm256_loadu_ps(&A[i*NK+k]);
+                            __m256 vB = _mm256_loadu_ps(&B[k*NJ+j]);
+                            __m256 vC = _mm256_loadu_ps(&C[i*NJ+j]);
+                            vC = _mm256_add_ps(vC, _mm256_mul_ps(vA, vB));
+                            _mm256_storeu_ps(&C[i*NJ+j], vC);
                         }
+                        C[i*NJ+j] = cij;
                     }
                 }
             }
