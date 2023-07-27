@@ -51,7 +51,7 @@ void print_and_valid_array_sum(float C[NI*NJ])
     for (j = 0; j < NJ; j++)
       sum += C[i*NJ+j];
 
-  if ( abs(sum-golden_sum)/sum > 0.00001 ) // more than 0.001% error rate
+  if ( abs(sum-golden_sum)/golden_sum > 0.00001 ) // more than 0.001% error rate
     printf("Incorrect sum of C array. Expected sum: %f, your sum: %f\n", golden_sum, sum);
   else
     printf("Correct result. Sum of C array = %f\n", sum);
