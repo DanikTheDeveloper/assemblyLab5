@@ -130,8 +130,6 @@ static void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alph
 
 
 /* Main computational kernel: with tiling and simd optimizations. */
-#include <immintrin.h>
-
 static void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
     int i, j, k, i1, j1, k1, i2, j2, k2, i3, j3, k3;
 
@@ -161,10 +159,11 @@ static void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float
                                                     __m256 b_val = _mm256_load_ps(&B[k*NJ+j]);
                                                     sum = _mm256_add_ps(sum, _mm256_mul_ps(a_val, b_val));
                                                 }
-                                                // Multiply with alpha and add to C
+
+                                                // Multiply with alpha and add to C manually without FMA
                                                 __m256 c_val = _mm256_load_ps(&C[i*NJ+j]);
                                                 __m256 alpha_val = _mm256_set1_ps(alpha);
-                                                __m256 res = _mm256_fmadd_ps(alpha_val, sum, c_val);
+                                                __m256 res = _mm256_add_ps(_mm256_mul_ps(alpha_val, sum), c_val);
                                                 _mm256_store_ps(&C[i*NJ+j], res);
                                             }
                                         }
@@ -178,8 +177,6 @@ static void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float
         }
     }
 }
-
-
 
 /* Main computational kernel: with tiling, simd, and parallelization optimizations. */
 static
