@@ -82,26 +82,52 @@ void gemm_base(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, floa
 }
 
 /* Main computational kernel: with tiling optimization. */
-static
-void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
-{
-  int i, j, k;
+#define L1_TILE 16  // Roughly estimated based on 32KiB L1 cache size, and the float size (4 bytes). 
+#define L2_TILE 64  // Roughly estimated based on 256KiB L2 cache size. 
+#define L3_TILE 512 // This is a rough estimate based on the 20MiB shared cache, but will likely need adjustment.
 
-// => Form C := alpha*A*B + beta*C,
-//A is NIxNK
-//B is NKxNJ
-//C is NIxNJ
-  for (i = 0; i < NI; i++) {
-    for (j = 0; j < NJ; j++) {
-      C[i*NJ+j] *= beta;
+static void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
+    int i, j, k, i1, j1, k1, i2, j2, k2, i3, j3, k3;
+
+    // Zero out C first
+    for (i = 0; i < NI; i++)
+        for (j = 0; j < NJ; j++)
+            C[i*NJ+j] *= beta;
+
+    // L3 tiling
+    for (i1 = 0; i1 < NI; i1 += L3_TILE) {
+        for (j1 = 0; j1 < NJ; j1 += L3_TILE) {
+            for (k1 = 0; k1 < NK; k1 += L3_TILE) {
+              
+                // L2 tiling
+                for (i2 = i1; i2 < i1 + L3_TILE && i2 < NI; i2 += L2_TILE) {
+                    for (j2 = j1; j2 < j1 + L3_TILE && j2 < NJ; j2 += L2_TILE) {
+                        for (k2 = k1; k2 < k1 + L3_TILE && k2 < NK; k2 += L2_TILE) {
+
+                            // L1 tiling
+                            for (i3 = i2; i3 < i2 + L2_TILE && i3 < NI; i3 += L1_TILE) {
+                                for (j3 = j2; j3 < j2 + L2_TILE && j3 < NJ; j3 += L1_TILE) {
+                                    for (k3 = k2; k3 < k2 + L2_TILE && k3 < NK; k3 += L1_TILE) {
+
+                                        // The core multiplication loop
+                                        for (i = i3; i < i3 + L1_TILE && i < NI; i++) {
+                                            for (j = j3; j < j3 + L1_TILE && j < NJ; j++) {
+                                                for (k = k3; k < k3 + L1_TILE && k < NK; k++) {
+                                                    C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
-    for (j = 0; j < NJ; j++) {
-      for (k = 0; k < NK; ++k) {
-	C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
-      }
-    }
-  }
 }
+
 
 /* Main computational kernel: with tiling and simd optimizations. */
 static
