@@ -132,11 +132,7 @@ static void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alph
 /* Main computational kernel: with tiling and simd optimizations. */
 #include <immintrin.h> // for AVX2
 
-#define L1_TILE 8  // Determined by experimentation
-#define L2_TILE 32 // Determined by experimentation
-#define L3_TILE 128 // This is a rough estimate. You should adjust this.
-
-static void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
+void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
     int i, j, k, i1, j1, k1, i2, j2, k2, i3, j3, k3;
 
     // Zero out C first
