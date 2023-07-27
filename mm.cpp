@@ -156,15 +156,15 @@ static void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float
 
                                                 for (k = k3; k < k3 + L1_TILE && k < NK; k++) {
                                                     __m256 a_val = _mm256_broadcast_ss(&A[i*NK+k]);
-                                                    __m256 b_val = _mm256_load_ps(&B[k*NJ+j]);
+                                                    __m256 b_val = _mm256_loadu_ps(&B[k*NJ+j]);
                                                     sum = _mm256_add_ps(sum, _mm256_mul_ps(a_val, b_val));
                                                 }
 
                                                 // Multiply with alpha and add to C manually without FMA
-                                                __m256 c_val = _mm256_load_ps(&C[i*NJ+j]);
+                                                __m256 c_val = _mm256_loadu_ps(&C[i*NJ+j]);
                                                 __m256 alpha_val = _mm256_set1_ps(alpha);
                                                 __m256 res = _mm256_add_ps(_mm256_mul_ps(alpha_val, sum), c_val);
-                                                _mm256_store_ps(&C[i*NJ+j], res);
+                                                _mm256_storeu_ps(&C[i*NJ+j], res);
                                             }
                                         }
                                     }
