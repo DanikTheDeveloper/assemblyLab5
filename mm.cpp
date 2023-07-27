@@ -82,92 +82,69 @@ void gemm_base(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, floa
 }
 
 /* Main computational kernel: with tiling optimization. */
-#define BLOCK_SIZE 32 // You might need to tune this depending on cache sizes
-
 static
 void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
 {
-  int i, j, k, ii, jj, kk;
+  int i, j, k;
 
-  // Zero out C first.
+// => Form C := alpha*A*B + beta*C,
+//A is NIxNK
+//B is NKxNJ
+//C is NIxNJ
   for (i = 0; i < NI; i++) {
     for (j = 0; j < NJ; j++) {
       C[i*NJ+j] *= beta;
     }
-  }
-
-  for (ii = 0; ii < NI; ii += BLOCK_SIZE) {
-    for (jj = 0; jj < NJ; jj += BLOCK_SIZE) {
-      for (kk = 0; kk < NK; kk += BLOCK_SIZE) {
-        for (i = ii; i < ii + BLOCK_SIZE && i < NI; i++) {
-          for (j = jj; j < jj + BLOCK_SIZE && j < NJ; j++) {
-            for (k = kk; k < kk + BLOCK_SIZE && k < NK; k++) {
-              C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
-            }
-          }
-        }
+    for (j = 0; j < NJ; j++) {
+      for (k = 0; k < NK; ++k) {
+	C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
       }
     }
   }
 }
 
-
 /* Main computational kernel: with tiling and simd optimizations. */
-#include <immintrin.h>
-
 static
-void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
-    int i, j, k, ii, jj, kk;
-    __m256 vec_alpha = _mm256_set1_ps(alpha);
-    __m256 vec_beta = _mm256_set1_ps(beta);
+void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
+{
+  int i, j, k;
 
-    for (ii = 0; ii < NI; ii += BLOCK_SIZE) {
-        for (jj = 0; jj < NJ; jj += BLOCK_SIZE) {
-            for (kk = 0; kk < NK; kk += BLOCK_SIZE) {
-                for (i = ii; i < ii + BLOCK_SIZE && i < NI; i++) {
-                    for (j = jj; j < jj + BLOCK_SIZE && j < NJ; j+=8) {
-                        __m256 vec_C = _mm256_loadu_ps(&C[i*NJ+j]);
-                        vec_C = _mm256_mul_ps(vec_C, vec_beta);
-                        for (k = kk; k < kk + BLOCK_SIZE && k < NK; k++) {
-                            __m256 vec_A = _mm256_set1_ps(A[i*NK+k]);
-                            __m256 vec_B = _mm256_loadu_ps(&B[k*NJ+j]);
-                            vec_C = _mm256_add_ps(vec_C, _mm256_mul_ps(_mm256_mul_ps(vec_A, vec_B), vec_alpha));
-                        }
-                        _mm256_storeu_ps(&C[i*NJ+j], vec_C);
-                    }
-                }
-            }
-        }
+// => Form C := alpha*A*B + beta*C,
+//A is NIxNK
+//B is NKxNJ
+//C is NIxNJ
+  for (i = 0; i < NI; i++) {
+    for (j = 0; j < NJ; j++) {
+      C[i*NJ+j] *= beta;
     }
+    for (j = 0; j < NJ; j++) {
+      for (k = 0; k < NK; ++k) {
+	C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
+      }
+    }
+  }
 }
 
 /* Main computational kernel: with tiling, simd, and parallelization optimizations. */
 static
+void gemm_tile_simd_par(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
+{
+  int i, j, k;
 
-void gemm_tile_simd_par(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
-    int i, j, k, ii, jj, kk;
-    __m256 vec_alpha = _mm256_set1_ps(alpha);
-    __m256 vec_beta = _mm256_set1_ps(beta);
-
-    #pragma omp parallel for private(ii, jj, kk, i, j, k)
-    for (ii = 0; ii < NI; ii += BLOCK_SIZE) {
-        for (jj = 0; jj < NJ; jj += BLOCK_SIZE) {
-            for (kk = 0; kk < NK; kk += BLOCK_SIZE) {
-                for (i = ii; i < ii + BLOCK_SIZE && i < NI; i++) {
-                    for (j = jj; j < jj + BLOCK_SIZE && j < NJ; j+=8) {
-                        __m256 vec_C = _mm256_loadu_ps(&C[i*NJ+j]);
-                        vec_C = _mm256_mul_ps(vec_C, vec_beta);
-                        for (k = kk; k < kk + BLOCK_SIZE && k < NK; k++) {
-                            __m256 vec_A = _mm256_set1_ps(A[i*NK+k]);
-                            __m256 vec_B = _mm256_loadu_ps(&B[k*NJ+j]);
-                            vec_C = _mm256_add_ps(vec_C, _mm256_mul_ps(_mm256_mul_ps(vec_A, vec_B), vec_alpha));
-                        }
-                        _mm256_storeu_ps(&C[i*NJ+j], vec_C);
-                    }
-                }
-            }
-        }
+// => Form C := alpha*A*B + beta*C,
+//A is NIxNK
+//B is NKxNJ
+//C is NIxNJ
+  for (i = 0; i < NI; i++) {
+    for (j = 0; j < NJ; j++) {
+      C[i*NJ+j] *= beta;
     }
+    for (j = 0; j < NJ; j++) {
+      for (k = 0; k < NK; ++k) {
+	C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
+      }
+    }
+  }
 }
 
 int main(int argc, char** argv)
