@@ -82,25 +82,46 @@ void gemm_base(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, floa
 }
 
 /* Main computational kernel: with tiling optimization. */
-static void gemm_tile(float C[NI * NJ], float A[NI * NK], float B[NK * NJ], float alpha, float beta)
-{
-    int i, j, k, i_blk, j_blk, k_blk;
-    const int BLOCK_SIZE = 16; // Choose an appropriate block size for tiling.
+#define TILE_SIZE 32
 
-    // Loop over the blocks of matrices A, B, and C using tiling
-    for (i_blk = 0; i_blk < NI; i_blk += BLOCK_SIZE) {
-        for (j_blk = 0; j_blk < NJ; j_blk += BLOCK_SIZE) {
-            for (k_blk = 0; k_blk < NK; k_blk += BLOCK_SIZE) {
-                // Process a block of matrix C
-                for (i = i_blk; i < i_blk + BLOCK_SIZE && i < NI; i++) {
-                    for (j = j_blk; j < j_blk + BLOCK_SIZE && j < NJ; j++) {
-                        // Scale the current element of C by beta
-                        C[i * NJ + j] *= beta;
+static void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
+    int i, j, k, ii, jj, kk;
 
-                        // Compute the matrix multiplication for the current element of C
-                        for (k = k_blk; k < k_blk + BLOCK_SIZE && k < NK; k++) {
-                            C[i * NJ + j] += alpha * A[i * NK + k] * B[k * NJ + j];
+    for (ii = 0; ii < NI; ii += TILE_SIZE) {
+        for (jj = 0; jj < NJ; jj += TILE_SIZE) {
+            for (kk = 0; kk < NK; kk += TILE_SIZE) {
+                for (i = ii; i < ii + TILE_SIZE && i < NI; i++) {
+                    for (j = jj; j < jj + TILE_SIZE && j < NJ; j++) {
+                        float cij = C[i*NJ+j] * beta;
+                        for (k = kk; k < kk + TILE_SIZE && k < NK; ++k) {
+                            cij += alpha * A[i*NK+k] * B[k*NJ+j];
                         }
+                        C[i*NJ+j] = cij;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* Main computational kernel: with tiling and simd optimizations. */
+static void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
+    int i, j, k, ii, jj, kk;
+
+    for (ii = 0; ii < NI; ii += TILE_SIZE) {
+        for (jj = 0; jj < NJ; jj += TILE_SIZE) {
+            for (kk = 0; kk < NK; kk += TILE_SIZE) {
+                for (i = ii; i < ii + TILE_SIZE && i < NI; i++) {
+                    for (j = jj; j < jj + TILE_SIZE && j < NJ; j++) {
+                        float cij = C[i*NJ+j] * beta;
+                        for (k = kk; k < kk + TILE_SIZE && k < NK; k += 8) {
+                            __m256 vA = _mm256_loadu_ps(&A[i*NK+k]);
+                            __m256 vB = _mm256_loadu_ps(&B[k*NJ+j]);
+                            __m256 vC = _mm256_loadu_ps(&C[i*NJ+j]);
+                            vC = _mm256_add_ps(vC, _mm256_mul_ps(vA, vB));
+                            _mm256_storeu_ps(&C[i*NJ+j], vC);
+                        }
+                        C[i*NJ+j] = cij;
                     }
                 }
             }
@@ -109,82 +130,25 @@ static void gemm_tile(float C[NI * NJ], float A[NI * NK], float B[NK * NJ], floa
 }
 
 
-/* Main computational kernel: with tiling and SIMD (AVX2) optimizations. */
-static void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
-{
-    int i, j, k, i_blk, j_blk, k_blk;
-    const int BLOCK_SIZE = 8; // AVX2 uses 256-bit registers (8 float elements)
+/* Main computational kernel: with tiling, simd, and parallelization optimizations. */
+static void gemm_tile_simd_par(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
+    int i, j, k, ii, jj, kk;
 
-    for (i_blk = 0; i_blk < NI; i_blk += BLOCK_SIZE) {
-        for (j_blk = 0; j_blk < NJ; j_blk += BLOCK_SIZE) {
-            for (k_blk = 0; k_blk < NK; k_blk += BLOCK_SIZE) {
-                // Process a block of matrix C
-                for (i = i_blk; i < i_blk + BLOCK_SIZE && i < NI; i++) {
-                    for (j = j_blk; j < j_blk + BLOCK_SIZE && j < NJ; j++) {
-                        // Scale the current element of C by beta
-                        C[i * NJ + j] *= beta;
-
-                        // Use AVX2 intrinsics for SIMD vectorization
-                        __m256 result_vector = _mm256_setzero_ps();
-
-                        for (k = k_blk; k < k_blk + BLOCK_SIZE && k < NK; k++) {
-                            __m256 a_vector = _mm256_set1_ps(A[i * NK + k]);
-                            __m256 b_vector = _mm256_loadu_ps(&B[k * NJ + j]);
-                            result_vector = _mm256_fmadd_ps(a_vector, b_vector, result_vector);
+    #pragma omp parallel for private(i,j,k,ii,jj,kk) shared(A,B,C) schedule(dynamic)
+    for (ii = 0; ii < NI; ii += TILE_SIZE) {
+        for (jj = 0; jj < NJ; jj += TILE_SIZE) {
+            for (kk = 0; kk < NK; kk += TILE_SIZE) {
+                for (i = ii; i < ii + TILE_SIZE && i < NI; i++) {
+                    for (j = jj; j < jj + TILE_SIZE && j < NJ; j++) {
+                        float cij = C[i*NJ+j] * beta;
+                        for (k = kk; k < kk + TILE_SIZE && k < NK; k += 8) {
+                            __m256 vA = _mm256_loadu_ps(&A[i*NK+k]);
+                            __m256 vB = _mm256_loadu_ps(&B[k*NJ+j]);
+                            __m256 vC = _mm256_loadu_ps(&C[i*NJ+j]);
+                            vC = _mm256_add_ps(vC, _mm256_mul_ps(vA, vB));
+                            _mm256_storeu_ps(&C[i*NJ+j], vC);
                         }
-
-                        // Horizontal addition (reduce) of the AVX2 vector
-                        float temp[BLOCK_SIZE];
-                        _mm256_storeu_ps(temp, result_vector);
-                        float sum = 0.0f;
-                        for (int z = 0; z < BLOCK_SIZE; z++) {
-                            sum += temp[z];
-                        }
-
-                        // Update C[i*NJ+j]
-                        C[i * NJ + j] += alpha * sum;
-                    }
-                }
-            }
-        }
-    }
-}
-
-/* Main computational kernel: with tiling, SIMD, and parallelization optimizations. */
-static void gemm_tile_simd_par(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
-{
-    int i, j, k, i_blk, j_blk, k_blk;
-    const int BLOCK_SIZE = 8; // AVX2 uses 256-bit registers (8 float elements)
-
-    #pragma omp parallel for private(i, j, k, i_blk, j_blk, k_blk)
-    for (i_blk = 0; i_blk < NI; i_blk += BLOCK_SIZE) {
-        for (j_blk = 0; j_blk < NJ; j_blk += BLOCK_SIZE) {
-            for (k_blk = 0; k_blk < NK; k_blk += BLOCK_SIZE) {
-                // Process a block of matrix C
-                for (i = i_blk; i < i_blk + BLOCK_SIZE && i < NI; i++) {
-                    for (j = j_blk; j < j_blk + BLOCK_SIZE && j < NJ; j++) {
-                        // Scale the current element of C by beta
-                        C[i * NJ + j] *= beta;
-
-                        // Use AVX2 intrinsics for SIMD vectorization
-                        __m256 result_vector = _mm256_setzero_ps();
-
-                        for (k = k_blk; k < k_blk + BLOCK_SIZE && k < NK; k++) {
-                            __m256 a_vector = _mm256_set1_ps(A[i * NK + k]);
-                            __m256 b_vector = _mm256_loadu_ps(&B[k * NJ + j]);
-                            result_vector = _mm256_fmadd_ps(a_vector, b_vector, result_vector);
-                        }
-
-                        // Horizontal addition (reduce) of the AVX2 vector
-                        float temp[BLOCK_SIZE];
-                        _mm256_storeu_ps(temp, result_vector);
-                        float sum = 0.0f;
-                        for (int z = 0; z < BLOCK_SIZE; z++) {
-                            sum += temp[z];
-                        }
-
-                        // Update C[i*NJ+j]
-                        C[i * NJ + j] += alpha * sum;
+                        C[i*NJ+j] = cij;
                     }
                 }
             }
