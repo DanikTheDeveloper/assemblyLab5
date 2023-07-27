@@ -2,9 +2,8 @@
 #include <stdlib.h>
 #include "my_timer.h"
 #include <x86intrin.h>
+#include <immintrin.h>
 #include <omp.h>
-
-#define BLOCK_SIZE 64
 
 #define NI 4096
 #define NJ 4096
@@ -62,64 +61,43 @@ void print_and_valid_array_sum(float C[NI*NJ])
 
 /* Main computational kernel: baseline. The whole function will be timed,
    including the call and return. DO NOT change the baseline.*/
-void gemm_base(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
-    int i, j, k, l, m, n;
+static
+void gemm_base(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
+{
+  int i, j, k;
 
-    __m256 alpha_vec = _mm256_set1_ps(alpha);
-    __m256 beta_vec = _mm256_set1_ps(beta);
-
-    for (i = 0; i < NI; i += BLOCK_SIZE) {
-        for (j = 0; j < NJ; j += BLOCK_SIZE) {
-            for (k = 0; k < NK; k += BLOCK_SIZE) {
-
-                // Inner loops for the tiles
-                for (l = i; l < i + BLOCK_SIZE && l < NI; ++l) {
-                    for (m = j; m < j + BLOCK_SIZE && m < NJ; m+=8) { // Increment by 8 for AVX2
-
-                        __m256 c_val;
-                        if (k == 0) {
-                            c_val = _mm256_loadu_ps(&C[l*NJ + m]);
-                            c_val = _mm256_mul_ps(c_val, beta_vec);
-                        } else {
-                            c_val = _mm256_loadu_ps(&C[l*NJ + m]);
-                        }
-
-                        // Now perform the dot product for this specific element of C
-                        for (n = k; n < k + BLOCK_SIZE && n < NK; ++n) {
-                            __m256 a_val = _mm256_set1_ps(A[l*NK + n]);
-                            __m256 b_val = _mm256_loadu_ps(&B[n*NJ + m]);
-                            
-                            __m256 prod = _mm256_mul_ps(a_val, b_val);
-                            prod = _mm256_mul_ps(prod, alpha_vec);
-                            c_val = _mm256_add_ps(c_val, prod);
-                        }
-
-                        _mm256_storeu_ps(&C[l*NJ + m], c_val);
-                    }
-                }
-            }
-        }
+// => Form C := alpha*A*B + beta*C,
+//A is NIxNK
+//B is NKxNJ
+//C is NIxNJ
+  for (i = 0; i < NI; i++) {
+    for (j = 0; j < NJ; j++) {
+      C[i*NJ+j] *= beta;
     }
+    for (j = 0; j < NJ; j++) {
+      for (k = 0; k < NK; ++k) {
+	C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
+      }
+    }
+  }
 }
 
 /* Main computational kernel: with tiling optimization. */
-static void gemm_tile(float C[NI * NJ], float A[NI * NK], float B[NK * NJ], float alpha, float beta)
+
+#define BLOCK_SIZE 32
+static
+void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
 {
-    int i, j, k, i_blk, j_blk, k_blk;
+    int i, j, k, ii, jj, kk;
 
-    // Loop over the blocks of matrices A, B, and C using tiling
-    for (i_blk = 0; i_blk < NI; i_blk += BLOCK_SIZE) {
-        for (j_blk = 0; j_blk < NJ; j_blk += BLOCK_SIZE) {
-            for (k_blk = 0; k_blk < NK; k_blk += BLOCK_SIZE) {
-                // Process a block of matrix C
-                for (i = i_blk; i < i_blk + BLOCK_SIZE && i < NI; i++) {
-                    for (j = j_blk; j < j_blk + BLOCK_SIZE && j < NJ; j++) {
-                        // Scale the current element of C by beta
-                        C[i * NJ + j] *= beta;
-
-                        // Compute the matrix multiplication for the current element of C
-                        for (k = k_blk; k < k_blk + BLOCK_SIZE && k < NK; k++) {
-                            C[i * NJ + j] += alpha * A[i * NK + k] * B[k * NJ + j];
+    for (ii = 0; ii < NI; ii+=BLOCK_SIZE) {
+        for (jj = 0; jj < NJ; jj+=BLOCK_SIZE) {
+            for (kk = 0; kk < NK; kk+=BLOCK_SIZE) {
+                for (i = ii; i < ii+BLOCK_SIZE && i < NI; i++) {
+                    for (j = jj; j < jj+BLOCK_SIZE && j < NJ; j++) {
+                        C[i*NJ+j] *= beta;
+                        for (k = kk; k < kk+BLOCK_SIZE && k < NK; ++k) {
+                            C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
                         }
                     }
                 }
@@ -133,21 +111,29 @@ static void gemm_tile(float C[NI * NJ], float A[NI * NK], float B[NK * NJ], floa
 static
 void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
 {
-  int i, j, k;
+    int i, j, k, ii, jj, kk;
 
-    __m256 alpha_vec = _mm256_set1_ps(alpha);
-    __m256 beta_vec = _mm256_set1_ps(beta);
+    __m256 vAlpha = _mm256_set1_ps(alpha);
+    __m256 vBeta = _mm256_set1_ps(beta);
 
-    for (i = 0; i < NI; i++) {
-        for (j = 0; j < NJ; j += 8) {  // Process 8 elements at once
-            __m256 c_vec = _mm256_loadu_ps(&C[i * NJ + j]);
-            c_vec = _mm256_mul_ps(c_vec, beta_vec);
-            for (k = 0; k < NK; ++k) {
-                __m256 a_vec = _mm256_set1_ps(A[i * NK + k]);
-                __m256 b_vec = _mm256_loadu_ps(&B[k * NJ + j]);
-                c_vec = _mm256_add_ps(c_vec, _mm256_mul_ps(a_vec, _mm256_mul_ps(b_vec, alpha_vec)));
+    for (ii = 0; ii < NI; ii+=BLOCK_SIZE) {
+        for (jj = 0; jj < NJ; jj+=BLOCK_SIZE) {
+            for (kk = 0; kk < NK; kk+=BLOCK_SIZE) {
+                for (i = ii; i < ii+BLOCK_SIZE && i < NI; i++) {
+                    for (j = jj; j < jj+BLOCK_SIZE && j < NJ; j++) {
+                        C[i*NJ+j] *= beta;
+                        for (k = kk; k < kk+BLOCK_SIZE && k < NK; k+=8) {
+                            __m256 vA = _mm256_load_ps(&A[i*NK+k]);
+                            __m256 vB = _mm256_load_ps(&B[k*NJ+j]);
+                            __m256 vC = _mm256_load_ps(&C[i*NJ+j]);
+                            
+                            vC = _mm256_fmadd_ps(vA, vB, vC);
+                            
+                            _mm256_store_ps(&C[i*NJ+j], vC);
+                        }
+                    }
+                }
             }
-            _mm256_storeu_ps(&C[i * NJ + j], c_vec);
         }
     }
 }
@@ -156,24 +142,29 @@ void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha,
 static
 void gemm_tile_simd_par(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
 {
-  __m256 alpha_vec = _mm256_set1_ps(alpha);
-    __m256 beta_vec = _mm256_set1_ps(beta);
+    int i, j, k, ii, jj, kk;
 
-    #pragma omp parallel for
-    for (int i = 0; i < NI; i++) {
-        for (int k = 0; k < NK; k++) {
-            __m256 a_vec = _mm256_set1_ps(A[i * NK + k]);
-            for (int j = 0; j < NJ; j += 8) {
-                if (k == 0) { // Scale by beta only on first iteration
-                    __m256 c_vec = _mm256_loadu_ps(&C[i * NJ + j]);
-                    c_vec = _mm256_mul_ps(c_vec, beta_vec);
-                    _mm256_storeu_ps(&C[i * NJ + j], c_vec);
+    __m256 vAlpha = _mm256_set1_ps(alpha);
+    __m256 vBeta = _mm256_set1_ps(beta);
+
+    #pragma omp parallel for private(i,j,k,jj,kk) schedule(dynamic)
+    for (ii = 0; ii < NI; ii+=BLOCK_SIZE) {
+        for (jj = 0; jj < NJ; jj+=BLOCK_SIZE) {
+            for (kk = 0; kk < NK; kk+=BLOCK_SIZE) {
+                for (i = ii; i < ii+BLOCK_SIZE && i < NI; i++) {
+                    for (j = jj; j < jj+BLOCK_SIZE && j < NJ; j++) {
+                        C[i*NJ+j] *= beta;
+                        for (k = kk; k < kk+BLOCK_SIZE && k < NK; k+=8) {
+                            __m256 vA = _mm256_load_ps(&A[i*NK+k]);
+                            __m256 vB = _mm256_load_ps(&B[k*NJ+j]);
+                            __m256 vC = _mm256_load_ps(&C[i*NJ+j]);
+                            
+                            vC = _mm256_fmadd_ps(vA, vB, vC);
+                            
+                            _mm256_store_ps(&C[i*NJ+j], vC);
+                        }
+                    }
                 }
-                __m256 c_vec = _mm256_loadu_ps(&C[i * NJ + j]);
-                __m256 b_vec = _mm256_loadu_ps(&B[k * NJ + j]);
-                __m256 temp_vec = _mm256_mul_ps(a_vec, b_vec);
-                c_vec = _mm256_add_ps(temp_vec, c_vec);
-                _mm256_storeu_ps(&C[i * NJ + j], c_vec);
             }
         }
     }
