@@ -130,26 +130,59 @@ static void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alph
 
 
 /* Main computational kernel: with tiling and simd optimizations. */
-static
-void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
-{
-  int i, j, k;
+#include <immintrin.h> // for AVX2
 
-// => Form C := alpha*A*B + beta*C,
-//A is NIxNK
-//B is NKxNJ
-//C is NIxNJ
-  for (i = 0; i < NI; i++) {
-    for (j = 0; j < NJ; j++) {
-      C[i*NJ+j] *= beta;
+#define L1_TILE 8  // Determined by experimentation
+#define L2_TILE 32 // Determined by experimentation
+#define L3_TILE 128 // This is a rough estimate. You should adjust this.
+
+static void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
+    int i, j, k, i1, j1, k1, i2, j2, k2, i3, j3, k3;
+
+    // Zero out C first
+    for (i = 0; i < NI; i++)
+        for (j = 0; j < NJ; j++)
+            C[i*NJ+j] *= beta;
+
+    // L3 tiling
+    for (i1 = 0; i1 < NI; i1 += L3_TILE) {
+        for (j1 = 0; j1 < NJ; j1 += L3_TILE) {
+            for (k1 = 0; k1 < NK; k1 += L3_TILE) {
+              
+                // L2 tiling
+                for (i2 = i1; i2 < i1 + L3_TILE && i2 < NI; i2 += L2_TILE) {
+                    for (j2 = j1; j2 < j1 + L3_TILE && j2 < NJ; j2 += L2_TILE) {
+                        for (k2 = k1; k2 < k1 + L3_TILE && k2 < NK; k2 += L2_TILE) {
+
+                            // L1 tiling
+                            for (i3 = i2; i3 < i2 + L2_TILE && i3 < NI; i3 += L1_TILE) {
+                                for (j3 = j2; j3 < j2 + L2_TILE && j3 < NJ; j3 += L1_TILE) {
+                                    for (k3 = k2; k3 < k2 + L2_TILE && k3 < NK; k3 += L1_TILE) {
+
+                                        // AVX2 SIMD for innermost loop
+                                        for (i = i3; i < i3 + L1_TILE && i < NI; i++) {
+                                            for (j = j3; j < j3 + L1_TILE && j < NJ; j++) {
+                                                __m256 c_vec = _mm256_loadu_ps(&C[i*NJ+j]);
+                                                for (k = k3; k < k3 + L1_TILE && k < NK; k += 8) { // Increment by 8 due to AVX2
+                                                    __m256 a_vec = _mm256_loadu_ps(&A[i*NK+k]);
+                                                    __m256 b_vec = _mm256_loadu_ps(&B[k*NJ+j]);
+                                                    __m256 tmp = _mm256_mul_ps(a_vec, b_vec);
+                                                    c_vec = _mm256_fmadd_ps(a_vec, b_vec, c_vec); // Fused multiply-add
+                                                }
+                                                _mm256_storeu_ps(&C[i*NJ+j], c_vec);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
-    for (j = 0; j < NJ; j++) {
-      for (k = 0; k < NK; ++k) {
-	C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
-      }
-    }
-  }
 }
+
 
 /* Main computational kernel: with tiling, simd, and parallelization optimizations. */
 static
