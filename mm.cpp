@@ -179,21 +179,21 @@ static void gemm_tile_simd(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float
 }
 
 /* Main computational kernel: with tiling, simd, and parallelization optimizations. */
-static void gemm_tile_simd_par(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
-{
+static void gemm_tile_simd_par(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
     int i, j, k, i1, j1, k1, i2, j2, k2, i3, j3, k3;
-    int nthreads = omp_get_max_threads();
 
-    // Apply beta scaling outside the parallel region for data consistency
-    for (i = 0; i < NI; i++)
-        for (j = 0; j < NJ; j++)
+    #pragma omp parallel for private(j)
+    for (i = 0; i < NI; i++) {
+        for (j = 0; j < NJ; j++) {
             C[i*NJ+j] *= beta;
+        }
+    }
 
-    #pragma omp parallel for private(i, j, k, i2, j2, k2, i3, j3, k3) num_threads(nthreads) collapse(2)
+    #pragma omp parallel for private(j1, k1, i2, j2, k2, i3, j3, k3, i, j, k)
     for (i1 = 0; i1 < NI; i1 += L3_TILE) {
         for (j1 = 0; j1 < NJ; j1 += L3_TILE) {
-
             for (k1 = 0; k1 < NK; k1 += L3_TILE) {
+
                 for (i2 = i1; i2 < i1 + L3_TILE && i2 < NI; i2 += L2_TILE) {
                     for (j2 = j1; j2 < j1 + L3_TILE && j2 < NJ; j2 += L2_TILE) {
                         for (k2 = k1; k2 < k1 + L3_TILE && k2 < NK; k2 += L2_TILE) {
@@ -204,7 +204,7 @@ static void gemm_tile_simd_par(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], f
 
                                         // Vectorized inner loop using AVX2
                                         for (i = i3; i < i3 + L1_TILE && i < NI; i++) {
-                                            for (j = j3; j < j3 + L1_TILE && j < NJ; j += 8) {
+                                            for (j = j3; j < j3 + L1_TILE && j < NJ; j += 8) { // process 8 elements at once
                                                 __m256 sum = _mm256_setzero_ps();
 
                                                 for (k = k3; k < k3 + L1_TILE && k < NK; k++) {
@@ -213,14 +213,13 @@ static void gemm_tile_simd_par(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], f
                                                     sum = _mm256_add_ps(sum, _mm256_mul_ps(a_val, b_val));
                                                 }
 
-                                                // Multiply with alpha and add to C
+                                                // Multiply with alpha and add to C manually without FMA
                                                 __m256 c_val = _mm256_loadu_ps(&C[i*NJ+j]);
                                                 __m256 alpha_val = _mm256_set1_ps(alpha);
                                                 __m256 res = _mm256_add_ps(_mm256_mul_ps(alpha_val, sum), c_val);
                                                 _mm256_storeu_ps(&C[i*NJ+j], res);
                                             }
                                         }
-
                                     }
                                 }
                             }
