@@ -85,24 +85,32 @@ void gemm_base(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, floa
 #define BLOCK_SIZE 32 // You might need to tune this depending on cache sizes
 
 static
-void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
-    int i, j, k, ii, jj, kk;
+void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta)
+{
+  int i, j, k, ii, jj, kk;
 
-    for (ii = 0; ii < NI; ii += BLOCK_SIZE) {
-        for (jj = 0; jj < NJ; jj += BLOCK_SIZE) {
-            for (kk = 0; kk < NK; kk += BLOCK_SIZE) {
-                for (i = ii; i < ii + BLOCK_SIZE && i < NI; i++) {
-                    for (j = jj; j < jj + BLOCK_SIZE && j < NJ; j++) {
-                        C[i*NJ+j] *= beta;
-                        for (k = kk; k < kk + BLOCK_SIZE && k < NK; k++) {
-                            C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
-                        }
-                    }
-                }
-            }
-        }
+  // Zero out C first.
+  for (i = 0; i < NI; i++) {
+    for (j = 0; j < NJ; j++) {
+      C[i*NJ+j] *= beta;
     }
+  }
+
+  for (ii = 0; ii < NI; ii += BLOCK_SIZE) {
+    for (jj = 0; jj < NJ; jj += BLOCK_SIZE) {
+      for (kk = 0; kk < NK; kk += BLOCK_SIZE) {
+        for (i = ii; i < ii + BLOCK_SIZE && i < NI; i++) {
+          for (j = jj; j < jj + BLOCK_SIZE && j < NJ; j++) {
+            for (k = kk; k < kk + BLOCK_SIZE && k < NK; k++) {
+              C[i*NJ+j] += alpha * A[i*NK+k] * B[k*NJ+j];
+            }
+          }
+        }
+      }
+    }
+  }
 }
+
 
 /* Main computational kernel: with tiling and simd optimizations. */
 #include <immintrin.h>
