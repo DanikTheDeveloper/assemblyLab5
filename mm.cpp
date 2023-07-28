@@ -46,7 +46,7 @@ void print_and_valid_array_sum(float C[NI*NJ])
 
   float sum = 0.0;
   float golden_sum = 27789682688.000000;
-  
+
   for (i = 0; i < NI; i++)
     for (j = 0; j < NJ; j++)
       sum += C[i*NJ+j];
@@ -82,9 +82,9 @@ void gemm_base(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, floa
 }
 
 /* Main computational kernel: with tiling optimization. */
-#define L1_TILE 16  
-#define L2_TILE 64   
-#define L3_TILE 256 
+#define L1_TILE 16
+#define L2_TILE 64
+#define L3_TILE 256
 
 static void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alpha, float beta) {
     int i, j, k, i1, j1, k1, i2, j2, k2, i3, j3, k3;
@@ -98,7 +98,7 @@ static void gemm_tile(float C[NI*NJ], float A[NI*NK], float B[NK*NJ], float alph
     for (i1 = 0; i1 < NI; i1 += L3_TILE) {
         for (j1 = 0; j1 < NJ; j1 += L3_TILE) {
             for (k1 = 0; k1 < NK; k1 += L3_TILE) {
-              
+
                 // L2 tiling
                 for (i2 = i1; i2 < i1 + L3_TILE && i2 < NI; i2 += L2_TILE) {
                     for (j2 = j1; j2 < j1 + L3_TILE && j2 < NJ; j2 += L2_TILE) {
@@ -243,7 +243,7 @@ int main(int argc, char** argv)
     opt = atoi(argv[1]);
   }
   //printf("option: %d\n", opt);
-  
+
   /* Initialize array(s). */
   init_array (C, A, B);
 
@@ -288,6 +288,6 @@ int main(int argc, char** argv)
   free(A);
   free(B);
   free(C);
-  
+
   return 0;
 }
